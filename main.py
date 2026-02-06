@@ -2,25 +2,32 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from linebot import LineBotApi, WebhookParser
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from datetime import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.date import DateTrigger
+from apscheduler.jobstores.base import JobLookupError
+from zoneinfo import ZoneInfo
 import sqlite3
-import threading
-import time
 import os
 
+# =========================
+# 基本設定
+# =========================
+TZ = ZoneInfo("Asia/Taipei")
 
-print("DEBUG TOKEN =", os.getenv("CHANNEL_ACCESS_TOKEN"))
-print("DEBUG SECRET =", os.getenv("CHANNEL_SECRET"))
-# ========= LINE 設定（用環境變數） =========
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
+
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    raise RuntimeError("LINE channel token / secret not set")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 parser = WebhookParser(CHANNEL_SECRET)
 
-# ========= FastAPI =========
 app = FastAPI()
 
-# ========= DB =========
+# =========================
+# DB
+# =========================
 conn = sqlite3.connect("reminder.db", check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute("""
@@ -29,12 +36,32 @@ CREATE TABLE IF NOT EXISTS reminder (
     group_id TEXT,
     remind_time TEXT,
     message TEXT,
-    sent INTEGER DEFAULT 0
+    job_id TEXT
 )
 """)
 conn.commit()
 
-# ========= Webhook =========
+# =========================
+# Scheduler（正式排程器）
+# =========================
+scheduler = BackgroundScheduler(timezone=TZ)
+scheduler.start()
+
+# =========================
+# 提醒任務
+# =========================
+def send_reminder(group_id: str, message: str):
+    try:
+        line_bot_api.push_message(
+            group_id,
+            TextSendMessage(text=f"⏰ 提醒\n{message}")
+        )
+    except Exception as e:
+        print("Push failed:", e)
+
+# =========================
+# Webhook
+# =========================
 @app.post("/webhook")
 async def webhook(request: Request, x_line_signature: str = Header(None)):
     body = await request.body()
@@ -49,14 +76,15 @@ async def webhook(request: Request, x_line_signature: str = Header(None)):
 
     return "OK"
 
-# ========= 訊息處理 =========
+# =========================
+# 指令處理
+# =========================
 def handle_message(event: MessageEvent):
     text = event.message.text.strip()
 
     if not text.startswith("提醒"):
         return
 
-    # 只處理群組
     if event.source.type != "group":
         line_bot_api.reply_message(
             event.reply_token,
@@ -65,29 +93,42 @@ def handle_message(event: MessageEvent):
         return
 
     try:
-        # 指令格式：提醒 2026-02-10 14:30 事項
+        # 提醒 2026-02-10 14:30 事項
         _, date_str, time_str, *msg = text.split(" ")
         remind_time = datetime.strptime(
             f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-        )
-        message = " ".join(msg)
+        ).replace(tzinfo=TZ)
 
+        message = " ".join(msg)
         group_id = event.source.group_id
 
+        # 建立排程
+        job = scheduler.add_job(
+            send_reminder,
+            trigger=DateTrigger(run_date=remind_time),
+            args=[group_id, message]
+        )
+
+        # 存 DB
         cursor.execute(
-            "INSERT INTO reminder (group_id, remind_time, message) VALUES (?, ?, ?)",
-            (group_id, remind_time.isoformat(), message)
+            "INSERT INTO reminder (group_id, remind_time, message, job_id) VALUES (?, ?, ?, ?)",
+            (group_id, remind_time.isoformat(), message, job.id)
         )
         conn.commit()
 
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text=f"✅ 已設定提醒\n時間：{date_str} {time_str}\n事項：{message}"
+                text=(
+                    "✅ 已設定提醒\n"
+                    f"時間：{date_str} {time_str}\n"
+                    f"事項：{message}"
+                )
             )
         )
 
-    except Exception:
+    except Exception as e:
+        print("Parse error:", e)
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
@@ -95,29 +136,25 @@ def handle_message(event: MessageEvent):
             )
         )
 
-# ========= 排程提醒 =========
-def reminder_loop():
-    while True:
-        now = datetime.now().isoformat()
-        cursor.execute(
-            "SELECT id, group_id, message FROM reminder WHERE sent=0 AND remind_time<=?",
-            (now,)
-        )
-        rows = cursor.fetchall()
+# =========================
+# 啟動時恢復排程（超重要）
+# =========================
+def restore_jobs():
+    cursor.execute("SELECT group_id, remind_time, message, job_id FROM reminder")
+    rows = cursor.fetchall()
 
-        for rid, group_id, message in rows:
+    for group_id, remind_time, message, job_id in rows:
+        run_date = datetime.fromisoformat(remind_time)
+        if run_date > datetime.now(TZ):
             try:
-                line_bot_api.push_message(
-                    group_id,
-                    TextSendMessage(text=f"⏰ 提醒\n{message}")
+                scheduler.add_job(
+                    send_reminder,
+                    trigger=DateTrigger(run_date=run_date),
+                    args=[group_id, message],
+                    id=job_id,
+                    replace_existing=True
                 )
-                cursor.execute(
-                    "UPDATE reminder SET sent=1 WHERE id=?", (rid,)
-                )
-                conn.commit()
-            except Exception as e:
-                print("Push error:", e)
+            except JobLookupError:
+                pass
 
-        time.sleep(30)
-
-threading.Thread(target=reminder_loop, daemon=True).start()
+restore_jobs()
