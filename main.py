@@ -7,6 +7,9 @@ import threading
 import time
 import os
 
+
+print("DEBUG TOKEN =", os.getenv("CHANNEL_ACCESS_TOKEN"))
+print("DEBUG SECRET =", os.getenv("CHANNEL_SECRET"))
 # ========= LINE 設定（用環境變數） =========
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
