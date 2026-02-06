@@ -82,7 +82,7 @@ async def webhook(request: Request, x_line_signature: str = Header(None)):
 def handle_message(event: MessageEvent):
     text = event.message.text.strip()
 
-    if not text.startswith("提醒"):
+    if not text.startswith("HINOTIFY提醒"):
         return
 
     if event.source.type != "group":
@@ -132,7 +132,7 @@ def handle_message(event: MessageEvent):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text="❌ 指令格式錯誤\n範例：提醒 2026-02-10 14:30 開會"
+                text="❌ 指令格式錯誤\n範例：HINOTIFY提醒 2026-02-10 14:30 開會"
             )
         )
 
