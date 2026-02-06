@@ -36,25 +36,27 @@ CREATE TABLE IF NOT EXISTS reminder (
     group_id TEXT,
     remind_time TEXT,
     message TEXT,
-    job_id TEXT
+    job_id TEXT,
+    notify_all INTEGER
 )
 """)
 conn.commit()
 
 # =========================
-# Scheduler（正式排程器）
+# Scheduler
 # =========================
 scheduler = BackgroundScheduler(timezone=TZ)
 scheduler.start()
 
 # =========================
-# 提醒任務
+# 發送提醒
 # =========================
-def send_reminder(group_id: str, message: str):
+def send_reminder(group_id: str, message: str, notify_all: bool):
     try:
+        prefix = "@all\n" if notify_all else ""
         line_bot_api.push_message(
             group_id,
-            TextSendMessage(text=f"⏰ 提醒\n{message}")
+            TextSendMessage(text=f"{prefix}⏰ 提醒\n{message}")
         )
     except Exception as e:
         print("Push failed:", e)
@@ -93,7 +95,10 @@ def handle_message(event: MessageEvent):
         return
 
     try:
-        # 提醒 2026-02-10 14:30 事項
+        notify_all = "@All" in text or "@all" in text
+        text = text.replace("@All", "").replace("@all", "").strip()
+
+        # HINOTIFY提醒 2026-02-10 14:30 事項
         _, date_str, time_str, *msg = text.split(" ")
         remind_time = datetime.strptime(
             f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
@@ -102,17 +107,18 @@ def handle_message(event: MessageEvent):
         message = " ".join(msg)
         group_id = event.source.group_id
 
-        # 建立排程
         job = scheduler.add_job(
             send_reminder,
             trigger=DateTrigger(run_date=remind_time),
-            args=[group_id, message]
+            args=[group_id, message, notify_all]
         )
 
-        # 存 DB
         cursor.execute(
-            "INSERT INTO reminder (group_id, remind_time, message, job_id) VALUES (?, ?, ?, ?)",
-            (group_id, remind_time.isoformat(), message, job.id)
+            """
+            INSERT INTO reminder (group_id, remind_time, message, job_id, notify_all)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (group_id, remind_time.isoformat(), message, job.id, int(notify_all))
         )
         conn.commit()
 
@@ -122,7 +128,8 @@ def handle_message(event: MessageEvent):
                 text=(
                     "✅ 已設定提醒\n"
                     f"時間：{date_str} {time_str}\n"
-                    f"事項：{message}"
+                    f"事項：{message}\n"
+                    f"@All：{'是' if notify_all else '否'}"
                 )
             )
         )
@@ -132,25 +139,27 @@ def handle_message(event: MessageEvent):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                text="❌ 指令格式錯誤\n範例：HINOTIFY提醒 2026-02-10 14:30 開會"
+                text="❌ 指令格式錯誤\n範例：HINOTIFY提醒@All 2026-02-10 14:30 開會"
             )
         )
 
 # =========================
-# 啟動時恢復排程（超重要）
+# 啟動時恢復排程
 # =========================
 def restore_jobs():
-    cursor.execute("SELECT group_id, remind_time, message, job_id FROM reminder")
+    cursor.execute(
+        "SELECT group_id, remind_time, message, job_id, notify_all FROM reminder"
+    )
     rows = cursor.fetchall()
 
-    for group_id, remind_time, message, job_id in rows:
+    for group_id, remind_time, message, job_id, notify_all in rows:
         run_date = datetime.fromisoformat(remind_time)
         if run_date > datetime.now(TZ):
             try:
                 scheduler.add_job(
                     send_reminder,
                     trigger=DateTrigger(run_date=run_date),
-                    args=[group_id, message],
+                    args=[group_id, message, bool(notify_all)],
                     id=job_id,
                     replace_existing=True
                 )
