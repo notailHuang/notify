@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Header, HTTPException
 from linebot import LineBotApi, WebhookParser
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import JoinEvent
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
@@ -8,6 +9,7 @@ from apscheduler.jobstores.base import JobLookupError
 from zoneinfo import ZoneInfo
 import sqlite3
 import os
+import v_util as util
 
 # =========================
 # 基本設定
@@ -81,9 +83,34 @@ async def webhook(request: Request, x_line_signature: str = Header(None)):
 # =========================
 # 指令處理
 # =========================
+OWNER_USER_ID = "U1a3eb06a3dcddb2c55a976c8bfe48188"
+def handle_event(event):
+    # Bot 被加進群
+    if isinstance(event, JoinEvent):
+        group_id = event.source.group_id
+        inviter_id = event.source.user_id  # 加你的人
+
+        if inviter_id != OWNER_USER_ID:
+            # 非本人邀請 → 直接離開群組
+            line_bot_api.leave_group(group_id)
+        else:
+            # 你邀請的 → 回一句確認
+            line_bot_api.push_message(
+                group_id,
+                TextSendMessage(text="✅ 機器人已啟用")
+            )
 def handle_message(event: MessageEvent):
-    print(event.source.user_id)
+    # 只允許你本人
+    if not util.get_constant_value("FREE") and event.source.user_id != OWNER_USER_ID:
+        return
+   
     text = event.message.text.strip()
+    
+    if event.source.user_id == OWNER_USER_ID :
+        if text.startswith("UPDATE"):
+             _, key,value = text.split(" ")
+             util.set_constant_value(key,value)
+            
 
     if not text.startswith("HINOTIFY提醒"):
         return
