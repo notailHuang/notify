@@ -110,6 +110,8 @@ def handle_message(event: MessageEvent):
         if text.startswith("UPDATE"):
              _, key,value = text.split(" ")
              util.set_constant_value(key,value)
+             TextSendMessage(text="✅ 指令修改成功，權限已開放")
+             return
             
 
     if not text.startswith("HINOTIFY提醒"):
