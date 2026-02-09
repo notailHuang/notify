@@ -82,6 +82,7 @@ async def webhook(request: Request, x_line_signature: str = Header(None)):
 # 指令處理
 # =========================
 def handle_message(event: MessageEvent):
+    print(event.source.user_id)
     text = event.message.text.strip()
 
     if not text.startswith("HINOTIFY提醒"):
