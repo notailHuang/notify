@@ -100,8 +100,9 @@ def handle_event(event):
                 TextSendMessage(text="✅ 機器人已啟用")
             )
 def handle_message(event: MessageEvent):
+    print(event.source.user_id)
     # 只允許你本人
-    if not util.get_constant_value("FREE") and event.source.user_id != OWNER_USER_ID:
+    if util.get_constant_value("FREE") == 'N' and event.source.user_id != OWNER_USER_ID:
         if text.startswith("HINOTIFY提醒"):
             TextSendMessage(text="⚠️ 無權限")
         return
