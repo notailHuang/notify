@@ -102,6 +102,8 @@ def handle_event(event):
 def handle_message(event: MessageEvent):
     # 只允許你本人
     if not util.get_constant_value("FREE") and event.source.user_id != OWNER_USER_ID:
+        if text.startswith("HINOTIFY提醒"):
+            TextSendMessage(text="⚠️ 無權限")
         return
    
     text = event.message.text.strip()
