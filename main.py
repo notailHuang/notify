@@ -9,7 +9,6 @@ from apscheduler.jobstores.base import JobLookupError
 from zoneinfo import ZoneInfo
 import sqlite3
 import os
-import v_util as util
 
 # =========================
 # 基本設定
@@ -43,6 +42,50 @@ CREATE TABLE IF NOT EXISTS reminder (
 )
 """)
 conn.commit()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)
+""")
+conn.commit()
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS allowed_groups (
+    group_id TEXT PRIMARY KEY
+)
+""")
+conn.commit()
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    return row[0] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    cursor.execute(
+        """
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value)
+    )
+    conn.commit()
+def is_group_allowed(group_id: str) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM allowed_groups WHERE group_id = ?",
+        (group_id,)
+    )
+    return cursor.fetchone() is not None
+
+
+def allow_group(group_id: str) -> None:
+    cursor.execute(
+        "INSERT OR IGNORE INTO allowed_groups (group_id) VALUES (?)",
+        (group_id,)
+    )
+    conn.commit()
 
 # =========================
 # Scheduler
@@ -90,48 +133,68 @@ async def webhook(request: Request, x_line_signature: str = Header(None)):
 # 指令處理
 # =========================
 OWNER_USER_ID = "U1a3eb06a3dcddb2c55a976c8bfe48188"
-def handle_event(event):
-    # Bot 被加進群
-    if isinstance(event, JoinEvent):
-        group_id = event.source.group_id
-        inviter_id = event.source.user_id  # 加你的人
+def handle_event(event: JoinEvent):
+    group_id = event.source.group_id
 
-        if inviter_id != OWNER_USER_ID:
-            # 非本人邀請 → 直接離開群組
-            line_bot_api.leave_group(group_id)
-        else:
-            # 你邀請的 → 回一句確認
-            line_bot_api.push_message(
-                group_id,
-                TextSendMessage(text="✅ 機器人已啟用")
+    # 群組尚未授權才提示
+    if not is_group_allowed(group_id):
+        line_bot_api.push_message(
+            group_id,
+            TextSendMessage(
+                text=(
+                    "⚠️ HINOTIFY 尚未啟用\n"
+                    "請由管理者輸入：\n"
+                    "HINOTIFY啟用"
+                )
             )
+        )
+
 def handle_message(event: MessageEvent):
-    print(event.source.user_id)
-    print(util.get_constant_value("FREE"))
-    # 只允許你本人
-    if util.get_constant_value("FREE") == 'N' and event.source.user_id != OWNER_USER_ID:
+    text = event.message.text.strip()
+    user_id = event.source.user_id
+    
+    # ===== 群組授權檢查 =====
+    if event.source.type == "group":
+        group_id = event.source.group_id
+
+        # 尚未授權，只允許 OWNER 啟用
+        if not is_group_allowed(group_id):
+            if text.strip().lower() == "hinotify啟用" and user_id == OWNER_USER_ID:
+                allow_group(group_id)
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="✅ 此群組已啟用 HINOTIFY")
+                )
+            return
+
+    FREE = get_setting("FREE", "N")
+
+    # 非擁有者且未開放 → 擋指令
+    if FREE == "N" and user_id != OWNER_USER_ID:
         if text.startswith("HINOTIFY提醒"):
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text="⚠️ 無權限")
             )
-            
         return
-   
-    text = event.message.text.strip()
-    
-    if event.source.user_id == OWNER_USER_ID :
-        if text.startswith("UPDATE"):
-             _, key,value = text.split(" ")
-             util.set_constant_value(key,value)
-             line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="✅ 指令修改成功，權限已開放")
-             )
-             
-             return
-            
 
+    # ===== 管理指令（只有你能用）=====
+    if user_id == OWNER_USER_ID and text.startswith("UPDATE"):
+        try:
+            _, key, value = text.split(" ", 2)
+            set_setting(key, value)
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=f"✅ 設定已更新\n{key} = {value}")
+            )
+        except Exception:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="❌ 指令格式：UPDATE KEY VALUE")
+            )
+        return
+
+    # ===== 提醒指令 =====
     if not text.startswith("HINOTIFY提醒"):
         return
 
@@ -143,7 +206,7 @@ def handle_message(event: MessageEvent):
         return
 
     try:
-        notify_all = "@All" in text or "@all" in text
+        notify_all = "@all" in text.lower()
         text = text.replace("@All", "").replace("@all", "").strip()
 
         # HINOTIFY提醒 2026-02-10 14:30 事項
@@ -190,6 +253,7 @@ def handle_message(event: MessageEvent):
                 text="❌ 指令格式錯誤\n範例：HINOTIFY提醒@All 2026-02-10 14:30 開會"
             )
         )
+
 
 # =========================
 # 啟動時恢復排程
