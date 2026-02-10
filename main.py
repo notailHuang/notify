@@ -148,7 +148,7 @@ def handle_event(event: JoinEvent):
                 )
             )
         )
-
+commandList = ["HINOTIFY提醒"]
 def handle_message(event: MessageEvent):
     text = event.message.text.strip()
     user_id = event.source.user_id
@@ -164,6 +164,11 @@ def handle_message(event: MessageEvent):
                 line_bot_api.reply_message(
                     event.reply_token,
                     TextSendMessage(text="✅ 此群組已啟用 HINOTIFY")
+                )
+            elif any(text.startswith(cmd) for cmd in commandList):
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="⚠️ 此群組尚未啟用 HINOTIFY")
                 )
             return
 
