@@ -75,10 +75,16 @@ async def webhook(request: Request, x_line_signature: str = Header(None)):
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     for event in events:
-        if isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
+        # 1️⃣ Bot 被加進群
+        if isinstance(event, JoinEvent):
+            handle_event(event)
+
+        # 2️⃣ 一般文字訊息
+        elif isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
             handle_message(event)
 
     return "OK"
+
 
 # =========================
 # 指令處理
@@ -101,10 +107,15 @@ def handle_event(event):
             )
 def handle_message(event: MessageEvent):
     print(event.source.user_id)
+    print(util.get_constant_value("FREE"))
     # 只允許你本人
     if util.get_constant_value("FREE") == 'N' and event.source.user_id != OWNER_USER_ID:
         if text.startswith("HINOTIFY提醒"):
-            TextSendMessage(text="⚠️ 無權限")
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="⚠️ 無權限")
+            )
+            
         return
    
     text = event.message.text.strip()
@@ -113,7 +124,11 @@ def handle_message(event: MessageEvent):
         if text.startswith("UPDATE"):
              _, key,value = text.split(" ")
              util.set_constant_value(key,value)
-             TextSendMessage(text="✅ 指令修改成功，權限已開放")
+             line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="✅ 指令修改成功，權限已開放")
+             )
+             
              return
             
 
