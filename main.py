@@ -86,6 +86,15 @@ def allow_group(group_id: str) -> None:
         (group_id,)
     )
     conn.commit()
+def disallow_group(group_id: str) -> None:
+    """
+    取消群組授權（停用 HINOTIFY）
+    """
+    cursor.execute(
+        "DELETE FROM allowed_groups WHERE group_id = ?",
+        (group_id,)
+    )
+    conn.commit()
 
 # =========================
 # Scheduler
@@ -164,6 +173,12 @@ def handle_message(event: MessageEvent):
                 line_bot_api.reply_message(
                     event.reply_token,
                     TextSendMessage(text="✅ 此群組已啟用 HINOTIFY")
+                )
+            elif text.strip().lower() == "hinotify停用" and user_id == OWNER_USER_ID:
+                
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="⚠️ 此群組已停用 HINOTIFY"")
                 )
             elif any(text.startswith(cmd) for cmd in commandList):
                 line_bot_api.reply_message(
