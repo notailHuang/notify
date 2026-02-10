@@ -161,7 +161,8 @@ commandList = ["HINOTIFY提醒"]
 def handle_message(event: MessageEvent):
     text = event.message.text.strip()
     user_id = event.source.user_id
-    
+    print('user_id:'+user_id)
+    print('text:'+text)
     # ===== 群組授權檢查 =====
     if event.source.type == "group":
         group_id = event.source.group_id
