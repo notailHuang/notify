@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 line-bot-sdk
-python-dateutil
-apscheduler
+apscheduler==3.10.4
+pytz
+tzlocal==2.1
