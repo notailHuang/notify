@@ -6,14 +6,20 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.jobstores.base import JobLookupError
-from zoneinfo import ZoneInfo
+from typing import Optional
+
+
+
 import sqlite3
 import os
 
 # =========================
 # 基本設定
 # =========================
-TZ = ZoneInfo("Asia/Taipei")
+import pytz
+
+TZ = pytz.timezone("Asia/Taipei")
+
 
 CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN")
 CHANNEL_SECRET = os.getenv("CHANNEL_SECRET")
@@ -29,9 +35,25 @@ app = FastAPI()
 # =========================
 # DB
 # =========================
-conn = sqlite3.connect("reminder.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""
+import threading
+from pathlib import Path
+DB_PATH = Path("/data/reminder.db")
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+db_lock = threading.Lock()
+
+conn = sqlite3.connect(
+    DB_PATH.as_posix(),
+    check_same_thread=False
+)
+
+
+
+def get_cursor():
+    with db_lock:
+        return conn.cursor()
+cur = get_cursor()
+cur.execute("""
 CREATE TABLE IF NOT EXISTS reminder (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     group_id TEXT,
@@ -42,28 +64,32 @@ CREATE TABLE IF NOT EXISTS reminder (
 )
 """)
 conn.commit()
-cursor.execute("""
+cur = get_cursor()
+cur.execute("""
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT
 )
 """)
 conn.commit()
-cursor.execute("""
+cur = get_cursor()
+cur.execute("""
 CREATE TABLE IF NOT EXISTS allowed_groups (
     group_id TEXT PRIMARY KEY
 )
 """)
 conn.commit()
 
-def get_setting(key: str, default: str | None = None) -> str | None:
-    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-    row = cursor.fetchone()
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    cur = get_cursor()
+    cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cur.fetchone()
     return row[0] if row else default
 
 
 def set_setting(key: str, value: str) -> None:
-    cursor.execute(
+    cur = get_cursor()
+    cur.execute(
         """
         INSERT INTO settings (key, value)
         VALUES (?, ?)
@@ -73,15 +99,17 @@ def set_setting(key: str, value: str) -> None:
     )
     conn.commit()
 def is_group_allowed(group_id: str) -> bool:
-    cursor.execute(
+    cur = get_cursor()
+    cur.execute(
         "SELECT 1 FROM allowed_groups WHERE group_id = ?",
         (group_id,)
     )
-    return cursor.fetchone() is not None
+    return cur.fetchone() is not None
 
 
 def allow_group(group_id: str) -> None:
-    cursor.execute(
+    cur = get_cursor()
+    cur.execute(
         "INSERT OR IGNORE INTO allowed_groups (group_id) VALUES (?)",
         (group_id,)
     )
@@ -90,7 +118,8 @@ def disallow_group(group_id: str) -> None:
     """
     取消群組授權（停用 HINOTIFY）
     """
-    cursor.execute(
+    cur = get_cursor()
+    cur.execute(
         "DELETE FROM allowed_groups WHERE group_id = ?",
         (group_id,)
     )
@@ -176,7 +205,7 @@ def handle_message(event: MessageEvent):
                     TextSendMessage(text="✅ 此群組已啟用 HINOTIFY")
                 )
             elif text.strip().lower() == "hinotify停用" and user_id == OWNER_USER_ID:
-                
+                disallow_group(group_id)
                 line_bot_api.reply_message(
                     event.reply_token,
                     TextSendMessage(text="⚠️ 此群組已停用 HINOTIFY")
@@ -232,9 +261,10 @@ def handle_message(event: MessageEvent):
 
         # HINOTIFY提醒 2026-02-10 14:30 事項
         _, date_str, time_str, *msg = text.split(" ")
-        remind_time = datetime.strptime(
+        naive_dt = datetime.strptime(
             f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-        ).replace(tzinfo=TZ)
+        )
+        remind_time = TZ.localize(naive_dt)
 
         message = " ".join(msg)
         group_id = event.source.group_id
@@ -244,8 +274,8 @@ def handle_message(event: MessageEvent):
             trigger=DateTrigger(run_date=remind_time),
             args=[group_id, message, notify_all]
         )
-
-        cursor.execute(
+        cur = get_cursor()
+        cur.execute(
             """
             INSERT INTO reminder (group_id, remind_time, message, job_id, notify_all)
             VALUES (?, ?, ?, ?, ?)
@@ -275,18 +305,25 @@ def handle_message(event: MessageEvent):
             )
         )
 
+@app.get("/")
+def health():
+    return {"status": "ok"}
 
 # =========================
 # 啟動時恢復排程
 # =========================
 def restore_jobs():
-    cursor.execute(
+    cur = get_cursor()
+    cur.execute(
         "SELECT group_id, remind_time, message, job_id, notify_all FROM reminder"
     )
-    rows = cursor.fetchall()
+    conn.commit()
+    rows = cur.fetchall()
 
     for group_id, remind_time, message, job_id, notify_all in rows:
         run_date = datetime.fromisoformat(remind_time)
+        if run_date.tzinfo is None:
+            run_date = TZ.localize(run_date)
         if run_date > datetime.now(TZ):
             try:
                 scheduler.add_job(
